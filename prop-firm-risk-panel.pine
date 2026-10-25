@@ -1,0 +1,106 @@
+// This source code is subject to the terms of the MIT License: https://opensource.org/licenses/MIT
+// © PropSim (https://propsim.markets), https://github.com/PropSim-Enterprise/prop-firm-tradingview-indicator
+//
+// Prop Firm Risk Panel: position size for a prop firm account, with the trade's
+// stop and target on the chart and how many losing trades the firm's daily loss
+// limit and maximum loss allow at that risk. TradingView cannot read your broker
+// account, so the account size, balance and rules are inputs.
+
+//@version=5
+indicator("Prop Firm Risk Panel: Position Size and Drawdown", shorttitle = "Prop Firm Risk", overlay = true, max_lines_count = 10, max_labels_count = 10)
+
+// ── Inputs ────────────────────────────────────────────────────────────────
+grpAccount = "Account"
+accountSize = input.float(100000.0, "Account size (starting balance)", minval = 0, group = grpAccount)
+balance = input.float(100000.0, "Current balance", minval = 0, group = grpAccount)
+accountCcy = input.string("USD", "Account currency", group = grpAccount, tooltip = "ISO code, e.g. USD, EUR, GBP. Prices are converted into it.")
+
+grpRules = "Prop firm rules"
+dailyPct = input.float(5.0, "Daily loss limit (% of starting balance)", minval = 0, step = 0.5, group = grpRules)
+maxPct = input.float(10.0, "Maximum loss (% of starting balance)", minval = 0, step = 0.5, group = grpRules)
+targetPct = input.float(8.0, "Profit target (% of starting balance)", minval = 0, step = 0.5, group = grpRules)
+
+grpTrade = "Trade"
+riskPct = input.float(0.5, "Risk per trade (% of current balance)", minval = 0, step = 0.1, group = grpTrade)
+entry = input.price(0.0, "Entry price", confirm = true, group = grpTrade)
+stop = input.price(0.0, "Stop loss price", confirm = true, group = grpTrade)
+rMultiple = input.float(2.0, "Take profit (multiple of the risk)", minval = 0, step = 0.5, group = grpTrade)
+
+grpContract = "Contract"
+lotUnitsInput = input.float(0.0, "Units per 1.00 lot (0 = auto)", minval = 0, group = grpContract, tooltip = "Auto uses 100,000 for forex and 1 for everything else. Gold (XAUUSD) is usually 100 and silver 5,000 per lot. Check your broker's contract specification.")
+lotStep = input.float(0.01, "Lot step", minval = 0.0001, group = grpContract)
+
+grpStyle = "Display"
+panelPos = input.string("Top right", "Panel position", options = ["Top right", "Bottom right", "Top left", "Bottom left"], group = grpStyle)
+
+// ── Calculation ───────────────────────────────────────────────────────────
+// Price → account currency. na when TradingView has no rate for the pair.
+fxRaw = request.currency_rate(syminfo.currency, accountCcy, ignore_invalid_currency = true)
+fx = na(fxRaw) ? 1.0 : fxRaw
+unitsPerLot = lotUnitsInput > 0 ? lotUnitsInput : syminfo.type == "forex" ? 100000.0 : 1.0
+
+stopDistance = math.abs(entry - stop)
+validTrade = entry > 0 and stop > 0 and stopDistance > 0
+isLong = entry > stop
+target = isLong ? entry + rMultiple * stopDistance : entry - rMultiple * stopDistance
+
+riskTarget = balance * riskPct / 100
+lossPerLot = stopDistance * syminfo.pointvalue * unitsPerLot * fx
+lotsRaw = lossPerLot > 0 ? riskTarget / lossPerLot : 0.0
+lots = math.floor(lotsRaw / lotStep + 1e-9) * lotStep
+actualRisk = lots * lossPerLot
+
+dailyLimit = accountSize * dailyPct / 100
+maxLimit = accountSize * maxPct / 100
+lossesToDaily = actualRisk > 0 ? math.floor(dailyLimit / actualRisk) : 0
+lossesToMax = actualRisk > 0 ? math.floor(maxLimit / actualRisk) : 0
+maxLossFloor = accountSize - maxLimit
+profitTargetLeft = math.max(0.0, accountSize * targetPct / 100 - (balance - accountSize))
+
+// ── Formatting ────────────────────────────────────────────────────────────
+money(float v) =>
+    accountCcy + " " + str.tostring(math.round(v), "#,###")
+
+panelPosition(string p) =>
+    switch p
+        "Bottom right" => position.bottom_right
+        "Top left" => position.top_left
+        "Bottom left" => position.bottom_left
+        => position.top_right
+
+// ── Chart lines ───────────────────────────────────────────────────────────
+var line entryLine = na
+var line stopLine = na
+var line targetLine = na
+var label stopLabel = na
+var label targetLabel = na
+
+if barstate.islast and validTrade
+    line.delete(entryLine)
+    line.delete(stopLine)
+    line.delete(targetLine)
+    label.delete(stopLabel)
+    label.delete(targetLabel)
+    entryLine := line.new(bar_index - 1, entry, bar_index, entry, extend = extend.both, color = color.gray, style = line.style_dashed)
+    stopLine := line.new(bar_index - 1, stop, bar_index, stop, extend = extend.both, color = color.red, width = 2)
+    targetLine := line.new(bar_index - 1, target, bar_index, target, extend = extend.both, color = color.teal, width = 2)
+    stopLabel := label.new(bar_index + 3, stop, "Stop: -" + money(actualRisk), style = label.style_label_left, color = color.red, textcolor = color.white, size = size.small)
+    targetLabel := label.new(bar_index + 3, target, "Target: +" + money(actualRisk * rMultiple), style = label.style_label_left, color = color.teal, textcolor = color.white, size = size.small)
+
+// ── Panel ─────────────────────────────────────────────────────────────────
+var table panel = table.new(panelPosition(panelPos), 2, 9, bgcolor = color.new(#0b1020, 5), frame_color = color.new(#2a3352, 0), frame_width = 1, border_width = 0)
+
+row(int r, string k, string v, color c) =>
+    table.cell(panel, 0, r, k, text_color = color.new(#b8c0d6, 0), text_halign = text.align_left, text_size = size.small)
+    table.cell(panel, 1, r, v, text_color = c, text_halign = text.align_right, text_size = size.small)
+
+if barstate.islast
+    row(0, "Prop Firm Risk", validTrade ? isLong ? "Long" : "Short" : "", color.white)
+    row(1, "Position size", validTrade ? str.tostring(lots, "#.##") + " lots" : "set entry and stop", color.new(#6ee7b7, 0))
+    row(2, "Money at risk", money(actualRisk), color.white)
+    row(3, "Take profit (" + str.tostring(rMultiple) + "R)", money(actualRisk * rMultiple), color.white)
+    row(4, "Daily loss limit", money(dailyLimit), color.white)
+    row(5, "Losing trades to daily limit", str.tostring(lossesToDaily), lossesToDaily < 3 ? color.new(#fca5a5, 0) : color.white)
+    row(6, "Maximum loss floor", money(maxLossFloor), color.white)
+    row(7, "Losing trades to max loss", str.tostring(lossesToMax), color.white)
+    row(8, "Profit left to target", money(profitTargetLeft), color.white)
